@@ -1,0 +1,209 @@
+#include <SPI.h>
+#include <SD.h>
+
+// SD card connection
+// CS : D10, SCK : D13, MOSI : D11, MISO : D12
+const int csPin = 10;
+String filename = "scn001.txt";  // File to store point cloud data
+
+// Ultrasonic sensor pins (using digital mode)
+// Trigger on A4 and Echo on A5
+const int trigPin = A4;
+const int echoPin = A5;
+
+// Turntable (theta) motor pins
+const int tStep   = 2;
+const int tDir    = 3;
+const int tMS1    = 4;
+const int tMS2    = 5;
+const int tEnable = 6;
+
+// Z‑axis motor pins
+const int zStep   = 7;
+const int zDir    = 8;
+const int zMS1    = 9;
+const int zMS2    = A2;  // Use A2 as digital output
+const int zEnable = A1;  // Use A1 as digital output
+
+// Scanning parameters
+const int thetaCounts = 200;      // Steps per full rotation for the turntable
+const int noZSteps = 20;          // Steps to move between layers
+const float maxDistance = 20.0;   // Maximum sensor distance (cm)
+const float tolerance = 0.1;      // Tolerance for max distance
+const float zLayerSpacing = 0.2;  // Vertical spacing between layers (cm)
+
+// Compute angle increment (in radians) for each step on the turntable
+const float stepAngle = (2 * PI) / thetaCounts;
+
+// Global variable to track the current layer (starting at 0)
+int layer = 0;
+
+// SD file handle
+File scannerValues;
+
+void setup() {
+  // Set up motor pins for the turntable
+  pinMode(tStep, OUTPUT);
+  pinMode(tDir, OUTPUT);
+  pinMode(tMS1, OUTPUT);
+  pinMode(tMS2, OUTPUT);
+  pinMode(tEnable, OUTPUT);
+
+  // Set up motor pins for the Z-axis
+  pinMode(zStep, OUTPUT);
+  pinMode(zDir, OUTPUT);
+  pinMode(zMS1, OUTPUT);
+  pinMode(zMS2, OUTPUT);
+  pinMode(zEnable, OUTPUT);
+
+  // Set microstepping to full step (both MS pins LOW)
+  digitalWrite(tMS1, LOW);
+  digitalWrite(tMS2, LOW);
+  digitalWrite(zMS1, LOW);
+  digitalWrite(zMS2, LOW);
+
+  // Enable motor drivers
+  digitalWrite(tEnable, LOW);
+  digitalWrite(zEnable, LOW);
+
+  // Set up ultrasonic sensor pins
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+
+  // Initialize serial communication
+  Serial.begin(9600);
+
+  // Initialize SD card
+  Serial.print("Initializing SD card... ");
+  if (!SD.begin(csPin)) {
+    Serial.println("initialization failed!");
+    while (1);  // Halt execution if SD card init fails
+  }
+  Serial.println("initialization success!");
+
+  // Write a header (optional) to the file
+  scannerValues = SD.open(filename, FILE_WRITE);
+  if (scannerValues) {
+    scannerValues.println("# x y z");
+    scannerValues.close();
+  }
+}
+
+void loop() {
+  bool stopScanning = false;
+  Serial.println("Starting scan...");
+
+  // Set the Z-axis to move upward (assumed: LOW = upward)
+  digitalWrite(zDir, LOW);
+
+  // Scan continuously layer by layer
+  while (!stopScanning) {
+    Serial.print("Scanning layer: ");
+    Serial.println(layer);
+
+    // Assume this layer is entirely "air" until proven otherwise.
+    bool allAtMax = true;
+
+    // Perform a full rotation scan for this layer
+    for (int i = 0; i < thetaCounts; i++) {
+      // Rotate the turntable one step
+      rotateMotor(tStep, 1);
+      delay(200);  // Allow time for the step to settle
+
+      // Read sensor distance (in cm) using the ultrasonic sensor
+      double senseDistance = readUltrasonicSensor();
+
+      // Calculate the current angle in radians
+      float angle = i * stepAngle;
+
+      // Compute x and y coordinates using polar coordinates
+      double x = senseDistance * sin(angle);
+      double y = senseDistance * cos(angle);
+      // z coordinate is based on the current layer
+      double zCoord = layer * zLayerSpacing;
+
+      // Write the computed point to the SD card file
+      writeToSD(x, y, zCoord);
+
+      // Check if any reading is less than (maxDistance - tolerance)
+      if (senseDistance < (maxDistance - tolerance)) {
+        allAtMax = false;
+      }
+    }
+
+    // If every measurement in this layer is near max distance, stop scanning.
+    if (allAtMax) {
+      stopScanning = true;
+      Serial.println("Layer is entirely at max distance. Stopping scan.");
+    } else {
+      // Move the Z-axis upward for the next layer
+      rotateMotor(zStep, noZSteps);
+      delay(1000);
+      layer++;  // Increment layer count
+    }
+  }
+
+  // After scanning, return the Z-axis to the home position.
+  Serial.println("Scan complete. Returning z-axis to home...");
+  digitalWrite(zDir, HIGH);  // Reverse Z-axis direction (assumed: HIGH = downward)
+  delay(10);
+  for (int j = 0; j < layer; j++) {
+    rotateMotor(zStep, noZSteps);
+    delay(10);
+  }
+
+  Serial.println("Scan finished. Halting further scanning.");
+  while (true) {
+    delay(1000);  // Stop further processing
+  }
+}
+
+// Function to rotate a motor by pulsing its step pin a given number of times
+void rotateMotor(int stepPin, int steps) {
+  for (int i = 0; i < steps; i++) {
+    digitalWrite(stepPin, LOW);
+    delay(1);
+    digitalWrite(stepPin, HIGH);
+    delay(1);
+  }
+}
+
+// Function to read the ultrasonic sensor and convert the echo time to distance (cm)
+double readUltrasonicSensor() {
+  // Clear the trigger pin
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  // Trigger the sensor by setting the trigger pin high for 10 microseconds
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  
+  // Read the echo pin: pulseIn returns the time (in microseconds)
+  long duration = pulseIn(echoPin, HIGH);
+  
+  // Calculate the distance: speed of sound = 0.034 cm/microsecond
+  double distance = (duration * 0.034) / 2.0;
+  
+  // Cap the distance at maxDistance if necessary
+  if (distance > maxDistance) {
+    distance = maxDistance;
+  }
+  
+  return distance;
+}
+
+// Write the (x, y, z) coordinates to the SD card (space-separated)
+void writeToSD(double x, double y, double z) {
+  scannerValues = SD.open(filename, FILE_WRITE);
+  if (scannerValues) {
+    scannerValues.print(x, 3);
+    scannerValues.print(" ");
+    scannerValues.print(y, 3);
+    scannerValues.print(" ");
+    scannerValues.println(z, 3);
+    scannerValues.close();
+  } else {
+    Serial.print("Error opening ");
+    Serial.println(filename);
+  }
+}

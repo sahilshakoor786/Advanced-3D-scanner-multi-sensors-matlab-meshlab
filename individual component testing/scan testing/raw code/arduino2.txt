@@ -1,0 +1,260 @@
+/* Arduino Uno R3 Scanner Code (modified from DIY 3D Scanner - Super Make Something Episode 8)
+ * by: Alex - Super Make Something (modified for Uno R3)
+ * license: Creative Commons - Attribution - Non-Commercial.
+ *
+ * Pinout:
+ *
+ * SD card attached to SPI bus as follows:
+ *   - CS   : D10
+ *   - SCK  : D13
+ *   - MOSI : D11
+ *   - MISO : D12
+ *
+ * IR Sensor (10–80 cm range) attached to:
+ *   - Sense: A3
+ *
+ * Turntable stepper motor driver board:
+ *   - STEP   : D2
+ *   - DIR    : D3 
+ *   - MS1    : D4
+ *   - MS2    : D5
+ *   - Enable : D6
+ *
+ * Z‑Axis stepper motor driver board:
+ *   - STEP   : D7
+ *   - DIR    : D8
+ *   - MS1    : D9
+ *   - MS2    : A2   (use analog pin A2 as digital output)
+ *   - ENABLE : A1   (use analog pin A1 as digital output)
+ */
+
+#include <SPI.h>
+#include <SD.h>
+
+File scannerValues;
+String filename = "scn000.txt";
+
+// SD card chip select
+int csPin = 10;  // CS on D10
+
+// IR sensor pin (range 10–80 cm)
+int sensePin = A3;
+
+// Turntable (theta) motor pins
+int tStep   = 2;
+int tDir    = 3;
+int tMS1    = 4;
+int tMS2    = 5;
+int tEnable = 6;
+
+// Z‑axis motor pins (for Uno, using A1 and A2 for the updated connections)
+int zStep   = 7;
+int zDir    = 8;
+int zMS1    = 9;
+int zMS2    = A2;  // Use analog pin A2 as digital output
+int zEnable = A1;  // Use analog pin A1 as digital output
+
+// Scanning parameters
+int noZSteps = 20;       // Number of z-steps to move between layers
+int thetaCounts = 200;   // Theta motor steps per full rotation
+
+// For this modified code, we continuously scan until a whole layer returns maxDistance.
+float maxDistance = 20.0;  // Maximum distance threshold (cm)
+float tolerance = 0.1;     // Tolerance below maxDistance
+
+void setup() 
+{ 
+  // Define stepper pins as digital outputs
+  pinMode(tStep, OUTPUT);
+  pinMode(tDir, OUTPUT);
+  pinMode(tMS1, OUTPUT);
+  pinMode(tMS2, OUTPUT);
+  pinMode(tEnable, OUTPUT);
+  pinMode(zStep, OUTPUT);
+  pinMode(zDir, OUTPUT);
+  pinMode(zMS1, OUTPUT);
+  pinMode(zMS2, OUTPUT);
+  pinMode(zEnable, OUTPUT);
+
+  // Set microstepping mode for stepper driver boards
+  // Theta motor: no microstepping (MS1 Low, MS2 Low) = 1.8°/step (200 steps/rev)
+  digitalWrite(tMS1, LOW);
+  digitalWrite(tMS2, LOW);
+  
+  // Z motor: no microstepping (MS1 Low, MS2 Low) = 1.8°/step (200 steps/rev)
+  digitalWrite(zMS1, LOW);
+  digitalWrite(zMS2, LOW);
+
+  // Optional: set rotation directions if needed (uncomment and adjust)
+  // digitalWrite(tDir, HIGH);
+  // digitalWrite(zDir, LOW);
+  // delay(100);
+
+  // Enable motor controllers
+  digitalWrite(tEnable, LOW);
+  digitalWrite(zEnable, LOW);
+    
+  // Open serial communications
+  Serial.begin(9600);
+
+  // Initialize SD card
+  Serial.print("Initializing SD card... ");
+  if (!SD.begin(csPin))
+  {
+    Serial.println("initialization failed!");
+    return;
+  }
+  Serial.println("initialization success!");
+}
+
+void loop() 
+{
+  int layer = 0;
+  bool stopScanning = false;
+  
+  Serial.println("Starting scan...");
+  
+  // Set z-axis to move upward (direction LOW)
+  digitalWrite(zDir, LOW);
+  
+  // Continue scanning layer-by-layer until an entire layer returns maxDistance
+  while (!stopScanning)
+  {
+    Serial.print("Z-layer: ");
+    Serial.println(layer);
+    
+    // Assume this layer is entirely "air" until proven otherwise.
+    bool allAtMax = true;
+    
+    // Scan one full rotation for this layer
+    for (int i = 0; i < thetaCounts; i++)   
+    {
+      rotateMotor(tStep, 1); // Rotate theta motor one step
+      delay(200);
+      
+      double senseDistance = readAnalogSensor(); // Read sensor in cm
+      
+      // Print sensor reading
+      Serial.print("Step ");
+      Serial.print(i);
+      Serial.print(" - Distance: ");
+      Serial.print(senseDistance, 2);
+      Serial.println(" cm");
+      
+      writeToSD(senseDistance); // Store reading in SD card
+      
+      // If any reading is less than (maxDistance - tolerance), then the layer is not entirely max.
+      if (senseDistance < (maxDistance - tolerance))
+      {
+        allAtMax = false;
+      }
+    }
+    
+    // Mark the end of the layer in SD card with a dummy value (delimiter)
+    writeToSD(9999);
+    Serial.println("----- End of layer -----");
+    
+    // If every reading in this layer was at or above maxDistance, stop scanning.
+    if (allAtMax)
+    {
+      stopScanning = true;
+      Serial.println("Max distance reached for entire layer. Stopping scan.");
+    }
+    else
+    {
+      // Otherwise, move the Z-axis up for the next layer.
+      rotateMotor(zStep, noZSteps);
+      delay(1000);
+      layer++;
+    }
+  }
+  
+  // Scan complete. Return the Z-axis mount to its initial (home) position.
+  Serial.println("Scan complete. Returning z-axis to home...");
+  // Reverse z-axis direction (set HIGH)
+  digitalWrite(zDir, HIGH);
+  delay(10);
+  // Move down the same number of layers that were scanned.
+  for (int j = 0; j < layer; j++)
+  {
+    rotateMotor(zStep, noZSteps);
+    delay(10);
+  }
+  
+  Serial.println("Scan finished. Pausing for one hour.");
+  // Pause for one hour
+  for (int k = 0; k < 3600; k++)
+  {
+    delay(1000); 
+  }
+}
+
+// Function to rotate a motor by a given number of steps.
+void rotateMotor(int pinNo, int steps)
+{
+  for (int i = 0; i < steps; i++)
+  {
+    digitalWrite(pinNo, LOW);
+    delay(1);
+    digitalWrite(pinNo, HIGH);
+    delay(1);
+  }
+}
+
+// Function to read the analog sensor and convert it to a distance in cm.
+double readAnalogSensor()
+{
+  int noSamples = 100;
+  long sumOfSamples = 0;
+  
+  for (int i = 0; i < noSamples; i++)
+  {
+    sumOfSamples += analogRead(sensePin);
+    delay(2); // Allow analog pin to settle
+  }
+  
+  double senseValue = (double)sumOfSamples / noSamples;
+  // Convert analog reading to voltage (assuming 5V reference)
+  double voltage = mapDouble(senseValue, 0.0, 1023.0, 0.0, 5.0);
+  
+  // For a sensor with a 10–80 cm range (e.g. Sharp GP2Y0A21YK0F),
+  // an approximate calibration is:
+  //   distance (cm) = 27.86 * (voltage^-1.15)
+  double distance;
+  if (voltage <= 0)
+  {
+    distance = maxDistance;  // Default to max distance if error
+  }
+  else
+  {
+    distance = 27.86 * pow(voltage, -1.15);
+  }
+  
+  return distance;
+}
+
+// Function to write sensor data to the SD card.
+void writeToSD(double senseDistance)
+{
+  // Open file for writing
+  scannerValues = SD.open(filename, FILE_WRITE);
+  
+  if (scannerValues)
+  {
+    scannerValues.print(senseDistance);
+    scannerValues.println();
+    scannerValues.close();
+  } 
+  else 
+  {
+    Serial.print("Error opening ");
+    Serial.println(filename);
+  }
+}
+
+// Utility function to map a double value from one range to another.
+double mapDouble(double x, double in_min, double in_max, double out_min, double out_max)
+{
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+

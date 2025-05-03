@@ -1,0 +1,162 @@
+/* Arduino Pro Micro Scanner Code (DIY 3D Scanner - Super Make Something Episode 8)
+ * by: Alex - Super Make Something
+ * date: January 2nd, 2016
+ * license: Creative Commons - Attribution - Non-Commercial.
+ * More information: http://creativecommons.org/licenses/by-nc/3.0/
+ *
+ * Modified by user:
+ * 1. Z-Axis stepper motor driver board:
+ *    - MS2 is now connected to digital pin D10
+ *    - ENABLE is now connected to digital pin D11
+ * 2. IR sensor is now connected to A0 (using a Sharp sensor with a 10–80cm range)
+ * 3. SD card code has been removed; output is printed via Serial.
+ * 4. Increased the speed of scanning one level.
+ */
+
+#include <SPI.h>
+
+// --- Pin Definitions ---
+// IR Sensor (Sharp GP2Y0A21YK0F, range 10–80cm) on A0
+int sensePin = A0;
+
+// Turntable (theta) motor driver pins
+int tStep   = 2;
+int tDir    = 3;
+int tMS1    = 4;
+int tMS2    = 5;
+int tEnable = 6;
+
+// Z-Axis motor driver pins (updated)
+int zStep   = 7;
+int zDir    = 8;
+int zMS1    = 9;
+int zMS2    = 10; // Changed: MS2 on D10
+int zEnable = 11; // Changed: ENABLE on D11
+
+// --- Setup ---
+void setup() 
+{ 
+  // Define stepper pins as outputs
+  pinMode(tStep, OUTPUT);
+  pinMode(tDir, OUTPUT);
+  pinMode(tMS1, OUTPUT);
+  pinMode(tMS2, OUTPUT);
+  pinMode(tEnable, OUTPUT);
+  
+  pinMode(zStep, OUTPUT);
+  pinMode(zDir, OUTPUT);
+  pinMode(zMS1, OUTPUT);
+  pinMode(zMS2, OUTPUT);
+  pinMode(zEnable, OUTPUT);
+
+  // Set microstepping mode for both drivers to "no microstepping"
+  // Theta motor: 1.8° per step (200 steps/rev)
+  digitalWrite(tMS1, LOW);
+  digitalWrite(tMS2, LOW);
+  
+  // Z motor: 1.8° per step (200 steps/rev)
+  digitalWrite(zMS1, LOW);
+  digitalWrite(zMS2, LOW);
+
+  // Enable motor controllers (assumed active LOW for Easy Driver boards)
+  digitalWrite(tEnable, LOW);
+  digitalWrite(zEnable, LOW);
+    
+  // Initialize Serial communications for output
+  Serial.begin(9600);
+  Serial.println("Scanner starting...");
+}
+
+void loop() 
+{
+  // Configuration:
+  int vertDistance = 10;  // Total desired Z-axis travel (cm)
+  int noZSteps   = 20;    // Number of z-steps per rotation (each step moves 0.05mm linearly)
+  int zCounts    = (200 * vertDistance) / noZSteps; // Total vertical increments
+  int thetaCounts = 200;  // Steps per full rotation (for a 1.8° motor)
+
+  // Scan object:
+  // Set z-axis direction to move UP during the scan
+  digitalWrite(zDir, HIGH); 
+  for (int j = 0; j < zCounts; j++) // For each vertical level...
+  {
+    Serial.print("Z-Level ");
+    Serial.print(j);
+    Serial.println(":");
+    
+    for (int i = 0; i < thetaCounts; i++)   // For one full turn of the turntable...
+    {
+      rotateMotor(tStep, 1); // Rotate theta motor one step
+      delay(50);             // Reduced delay to speed up the process
+      
+      double senseDistance = readAnalogSensor(); // Get IR sensor reading (in cm)
+      Serial.print(senseDistance, 2);
+      Serial.println(" cm");
+    }
+  
+    // After one full rotation, move the z-axis one increment:
+    rotateMotor(zStep, noZSteps);
+    delay(500);              // Reduced delay between levels
+    Serial.println("----- New Z Level -----");
+  }
+
+  // Scan complete. Rotate z-axis back to home position:
+  digitalWrite(zDir, LOW);
+  delay(10);  
+  for (int j = 0; j < zCounts; j++)
+  {
+    rotateMotor(zStep, noZSteps);
+    delay(10);
+  }
+
+  // Pause for one hour before restarting:
+  Serial.println("Scan complete. Pausing for 1 hour...");
+  for (int k = 0; k < 3600; k++) // 3600 seconds = 1 hour
+  {
+    delay(1000); 
+  }
+  // Optionally, remove or modify this pause for continuous scanning.
+}
+
+// --- Motor Control Function ---
+void rotateMotor(int pinNo, int steps)
+{
+  for (int i = 0; i < steps; i++)
+  {
+    // LOW-to-HIGH transition on the STEP pin creates a step pulse for the Easy Driver.
+    digitalWrite(pinNo, LOW);
+    delay(1);
+    digitalWrite(pinNo, HIGH);
+    delay(1);
+  }
+}
+
+// --- Sensor Reading Function ---
+// Updated calibration for Sharp sensor with 10–80cm range:
+// distance (cm) ≈ 27.86 * voltage^(-1.15)
+double readAnalogSensor()
+{
+  int noSamples = 100;
+  long sumOfSamples = 0;
+  for (int i = 0; i < noSamples; i++)
+  {
+    sumOfSamples += analogRead(sensePin);
+    delay(2);
+  }
+  
+  double avgReading = sumOfSamples / (double)noSamples;
+  // Map analog reading (0-1023) to voltage (0-5V)
+  double voltage = mapDouble(avgReading, 0.0, 1023.0, 0.0, 5.0);
+  
+  // Use the calibration equation:
+  // Avoid division by zero by ensuring a minimum voltage
+  if (voltage < 0.1) voltage = 0.1;
+  double distance = 27.86 * pow(voltage, -1.15);
+  return distance;
+}
+
+// --- Map Function for doubles ---
+double mapDouble(double x, double in_min, double in_max, double out_min, double out_max)
+{
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}

@@ -1,0 +1,65 @@
+Brief Overview
+The scanning routine proceeds in three main stages—initialization, layered scanning for each sensor, and return-to-home—using a shared Z-axis lift and individual steppers for rotation. Each sensor (IR, Ultrasonic 1, Ultrasonic 2) takes a full 360° sweep at a given height, then the assembly lifts up one layer and repeats until no object remains in view. Finally, the Z-axis returns to its starting position.
+
+1. Initialization Phase
+Lift Z-axis up by 10 cm at high speed.
+
+Lower Z-axis back down 10 cm at high speed.
+
+Spin the turntable one full revolution at high speed.
+
+This “warm-up” ensures all motors are moving freely and returns them all to known home positions before actual scanning begins.
+
+2. Layered Scanning Phase
+For each of the three sensors in sequence—IR, Ultrasonic 1, Ultrasonic 2—the code runs the same scanLayer() routine:
+
+Open or create the corresponding file (SC00I.txt, SC00U1.txt, or SC00U2.txt) and write a header if it’s the first layer.
+
+Rotate the sensor’s stepper one step at a time for thetaCounts steps (one full 360°).
+
+At each step:
+
+Read distance from the sensor (median-filtered IR or ultrasonic ping).
+
+Compute (x,y) using polar-to-Cartesian:
+
+𝑥
+=
+𝑑
+sin
+⁡
+(
+𝜃
+)
+,
+𝑦
+=
+𝑑
+cos
+⁡
+(
+𝜃
+)
+x=dsin(θ),y=dcos(θ)
+Compute z as layerCount × zLayerSpacing.
+
+Append the (x, y, z) point to the file.
+
+Track whether any reading is below maxDist − tolerance (i.e., an object is detected).
+
+After the full rotation:
+
+If any reading saw an object, lift the Z-axis by one layer (noZSteps) and increment layerCount, then repeat the rotation at the new height.
+
+If all readings were at max distance, stop scanning that sensor.
+
+3. Return-to-Home Phase
+After completing IR, Ultrasonic 1, and Ultrasonic 2 scans:
+
+Reverse Z-axis direction.
+
+Step down layerCount × noZSteps steps to return to the original base position.
+
+Halt further motion with an infinite loop.
+
+This structure ensures each sensor performs a full 3D sweep of the object, layer by layer, and writes its own point-cloud file before moving on to the next sensor.

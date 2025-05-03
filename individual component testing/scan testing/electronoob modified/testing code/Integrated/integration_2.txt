@@ -1,0 +1,279 @@
+// Authored by Sahil Shakoor, Final Mechanical Engineering Student, HBTI Kanpur
+// Advanced 3D Scanner — IR then Ultrasonic hand-off with height-limit and homing
+// Final Year Project — Group 18
+
+#include <SPI.h>
+#include <SD.h>
+#include <math.h>
+
+// ----------- Pin Definitions -----------
+// SD card
+const int csPin   = 10;    // SD chip-select
+
+// Turntable
+const int tStep   = 2;
+const int tDir    = 3;
+const int tMS1    = 4;
+const int tMS2    = 5;
+const int tEn     = 6;
+
+// Z-axis
+const int zStep   = 7;
+const int zDir    = 8;
+const int zMS1    = 9;
+const int zMS2    = A2;
+const int zEn     = A1;
+
+// IR sensor on its own Z-carriage
+const int irPin   = A3;
+
+// Ultrasonic 1 sensor & its stepper
+const int u1Step  = 22;
+const int u1Dir   = 23;
+const int u1MS1   = 24;
+const int u1MS2   = 25;
+const int u1En    = 26;
+const int u1Trig  = 28;
+const int u1Echo  = 29;
+
+// ----------- Scan Parameters -----------
+const int thetaCounts = 200;     // steps per 360°
+const int noZSteps    = 20;      // steps between layers
+const float zSpacing  = 0.2;     // cm per layer
+const float maxDist   = 20.0;    // sensor cap (cm)
+const float tol       = 0.1;     // tolerance for max readings
+const float stepAngle = (2*PI)/thetaCounts;
+
+// Mount radii (cm)
+const float IR_radius = 9.0;
+const float US_radius = 10.0;
+
+// File names
+const char* IR_file   = "SC00I.txt";
+const char* US_file   = "SC00U1.txt";
+
+// Track how many layers each has advanced
+int layerIR = 0;
+int layerUS = 0;
+
+// SD file handle
+File dataFile;
+
+// ----------- Helper Functions -----------
+// Single full-step pulse at given speed (microseconds)
+void pulseStepper(int pin, unsigned int us) {
+  digitalWrite(pin, LOW);
+  delayMicroseconds(us);
+  digitalWrite(pin, HIGH);
+  delayMicroseconds(us);
+}
+
+// Rotate N full-steps at default scan speed (~50 Hz)
+void rotateMotor(int stepPin, int steps) {
+  for (int i = 0; i < steps; i++) {
+    pulseStepper(stepPin, 1000);
+  }
+}
+
+// Rotate N full-steps fast (~2.5 kHz) for init or homing
+void rotateMotorFast(int stepPin, int steps) {
+  for (int i = 0; i < steps; i++) {
+    pulseStepper(stepPin, 200);
+  }
+}
+
+// Read IR with 5-sample median filter + cubic calibration
+double readIRMedian() {
+  const int N = 5;
+  int v[N];
+  for (int i = 0; i < N; i++) {
+    v[i] = analogRead(irPin);
+    delayMicroseconds(500);
+  }
+  // simple sort
+  for (int i = 0; i < N-1; i++)
+    for (int j = i+1; j < N; j++)
+      if (v[j] < v[i]) { int t = v[i]; v[i] = v[j]; v[j] = t; }
+  int med = v[N/2];
+  double V = (double)med * 5.0 / 1023.0;
+  double d = -5.40274*pow(V,3) + 28.4823*pow(V,2)
+             - 49.7115*V + 31.3444;
+  return (d > maxDist ? maxDist : d);
+}
+
+// Read HC-SR04 style ultrasonic
+double readUltrasonic(int trigPin, int echoPin) {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  long dur = pulseIn(echoPin, HIGH, 30000);
+  double d = (dur * 0.0343) / 2.0;
+  return (d > maxDist ? maxDist : d);
+}
+
+// Write one (x,y,z) point to open SD file
+void writePoint(double x, double y, double z) {
+  dataFile.print(x, 3);  dataFile.print(' ');
+  dataFile.print(y, 3);  dataFile.print(' ');
+  dataFile.println(z, 3);
+}
+
+// Move Z-axis back down to home from given layer count
+void returnZHome(int &layerCount) {
+  digitalWrite(zDir, HIGH);  // down
+  for (int i = 0; i < layerCount; i++) {
+    rotateMotorFast(zStep, noZSteps);
+  }
+  layerCount = 0;
+}
+
+// Perform one layered scan for given sensor/motor, with threshold logic
+bool performScan(
+  int stepPin,
+  bool useIR,
+  int trigPin, int echoPin,
+  const char* fname,
+  float heightLimit,
+  int &layerCount
+) {
+  // start fresh
+  layerCount = 0;
+  bool errorFlag = false;
+  bool heightExceeded = false;
+
+  // create file with header
+  dataFile = SD.open(fname, FILE_WRITE);
+  if (!dataFile) {
+    Serial.print("ERR open "); Serial.println(fname);
+    return true; // treat as error
+  }
+  dataFile.println("# x y z");
+  dataFile.close();
+
+  digitalWrite(zDir, LOW); // prepare to lift
+
+  // layer loop
+  while (!heightExceeded && !errorFlag) {
+    // turntable sweep
+    Serial.print("Scanning "); Serial.print(fname);
+    Serial.print(" layer "); Serial.println(layerCount);
+    for (int i = 0; i < thetaCounts; i++) {
+      rotateMotor(stepPin, 1);
+      delay(50);
+
+      double d = useIR
+        ? readIRMedian()
+        : readUltrasonic(trigPin, echoPin);
+
+      // if distance beyond height limit → stop
+      if (d > heightLimit) {
+        heightExceeded = true;
+        break;
+      }
+
+      // write point
+      float ang = i * stepAngle;
+      double x = d * sin(ang);
+      double y = d * cos(ang);
+      double z = layerCount * zSpacing;
+
+      dataFile = SD.open(fname, FILE_WRITE);
+      if (!dataFile) {
+        errorFlag = true;
+        break;
+      }
+      writePoint(x, y, z);
+      dataFile.close();
+    }
+
+    if (errorFlag || heightExceeded) break;
+
+    // lift Z to next layer
+    rotateMotor(zStep, noZSteps);
+    delay(200);
+    layerCount++;
+  }
+
+  // always return Z home
+  returnZHome(layerCount);
+
+  // if any error or heightExceeded, report it
+  if (errorFlag) {
+    Serial.print("ERROR during scan of "); Serial.println(fname);
+    return true;
+  }
+  if (heightExceeded) {
+    Serial.print("Height limit exceeded at "); Serial.print(fname);
+    Serial.println("; homed.");
+    return false; // not a fatal error
+  }
+
+  Serial.print("Completed scan of "); Serial.println(fname);
+  return false;
+}
+
+// ----------- Setup & Loop -----------
+void setup() {
+  Serial.begin(9600);
+
+  // configure stepper & sensor pins
+  int outPins[] = {
+    tStep, tDir, tMS1, tMS2, tEn,
+    zStep, zDir, zMS1, zMS2, zEn,
+    u1Step, u1Dir, u1MS1, u1MS2, u1En,
+    u1Trig
+  };
+  for (auto p : outPins) pinMode(p, OUTPUT);
+  pinMode(u1Echo, INPUT);
+  pinMode(irPin, INPUT);
+
+  // full-step microstepping
+  digitalWrite(tMS1, LOW); digitalWrite(tMS2, LOW);
+  digitalWrite(zMS1, LOW); digitalWrite(zMS2, LOW);
+  digitalWrite(u1MS1, LOW); digitalWrite(u1MS2, LOW);
+
+  // enable drivers
+  digitalWrite(tEn, LOW);
+  digitalWrite(zEn, LOW);
+  digitalWrite(u1En, LOW);
+
+  // init SD
+  Serial.print("Init SD...");
+  if (!SD.begin(csPin)) {
+    Serial.println(" FAILED"); while (1) {}
+  }
+  Serial.println(" OK");
+}
+
+void loop() {
+  // 1) IR phase
+  bool irErr = performScan(
+    tStep,   true,
+    0, 0,
+    IR_file,
+    IR_radius,
+    layerIR
+  );
+  if (irErr) {
+    // fatal: abort
+    while (1) delay(500);
+  }
+
+  // 2) Ultrasonic phase
+  bool usErr = performScan(
+    u1Step,  false,
+    u1Trig,  u1Echo,
+    US_file,
+    US_radius,
+    layerUS
+  );
+  if (usErr) {
+    // fatal: abort
+    while (1) delay(500);
+  }
+
+  Serial.println("All scans done.");
+  while (1) delay(1000);
+}

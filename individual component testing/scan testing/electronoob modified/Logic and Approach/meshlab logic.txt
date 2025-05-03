@@ -1,0 +1,107 @@
+When you import your scanner’s point cloud into MeshLab, it transforms that unstructured set of 3D points into a continuous surface (mesh) through four main stages: preprocessing, normal estimation, surface reconstruction, and post-processing. In preprocessing you clean and down-sample the raw point cloud. Then MeshLab computes a normal vector for each point, which defines the local surface orientation. Next, a surface-reconstruction algorithm (most commonly Poisson Reconstruction or Ball-Pivoting) uses those normals to fit triangles between neighboring points. Finally you’ll clean, smooth, and UV-map the resulting mesh.
+
+1. Preprocessing
+1.1 Cleaning
+Remove outliers and isolated points (often noise from IR or ultrasonic readings). In MeshLab you can use Filters → Cleaning and Remeshing → Remove Isolated pieces (wrt diameter) or Remove Outliers to discard stray points that would create spurious triangles.
+
+1.2 Down-sampling
+If your scanner generates a very dense cloud, you may simplify it with Filters → Sampling → Quadric Edge Collapse Decimation or Poisson-disk sampling. This speeds up reconstruction and reduces memory.
+
+2. Normal Estimation
+MeshLab needs surface normals for each point to know which way the surface is “facing.”
+
+Filters → Normals, Curvatures and Orientation → Compute Normals for Point Sets
+
+Choose a neighborhood size (e.g. k-nearest neighbors or radius) consistent with your scanner’s point-spacing (zLayerSpacing and angular step resolution).
+
+Optionally use “Re-orient all normals coherently” so that all normals point outward, preventing holes or flipped faces.
+
+3. Surface Reconstruction
+MeshLab offers several algorithms. Two of the most common:
+
+3.1 Poisson Surface Reconstruction
+Treats the point cloud + normals as samples of an implicit function’s gradient field.
+
+Solves a Poisson equation over an octree of your points to recover a watertight surface.
+
+Pros: Smooth, closed meshes; fills small holes.
+
+Cons: Can over-smooth fine details; global algorithm may be slower on huge clouds.
+
+In MeshLab:
+
+Filters → Remeshing, Simplification and Reconstruction → Surface Reconstruction: Poisson
+
+Adjust Octree Depth (higher = more detail, slower).
+
+3.2 Ball-Pivoting Algorithm (BPA)
+Rolls a virtual ball of given radius over the point cloud to connect triples of points into triangles wherever the ball touches exactly those three without including other points.
+
+Pros: Preserves sharp features; local method.
+
+Cons: Doesn’t close large holes; requires tuning of ball radius relative to point spacing.
+
+In MeshLab:
+
+Filters → Remeshing, Simplification and Reconstruction → Surface Reconstruction: Ball Pivoting
+
+Choose one or multiple radii (e.g. roughly equal to your average point-spacing).
+
+4. Post-Processing
+After initial mesh creation:
+
+Cleaning
+
+Remove duplicate faces and unreferenced vertices (Cleaning filters).
+
+Remove non-manifold edges to ensure printable or simulation-ready geometry.
+
+Smoothing & Refinement
+
+Laplacian Smooth to gently relax noise.
+
+Taubin Smooth to preserve volume while smoothing.
+
+Re-meshing / Remeshing
+
+Filters → Remeshing → Uniform Mesh Resampling to create a more regular triangle distribution if needed.
+
+UV Parameterization
+
+If you plan to texture the mesh, use Filters → Texture → Parameterization: Trivial Per-Triangle or more advanced UV tools.
+
+How It Applies to Your Scanner
+Layer Spacing & Density
+Your zLayerSpacing (e.g. 0.2 cm) and angular step (≈1.8° per step) determine the point-spacing.
+
+For BPA, set your ball radius to roughly 1–2× that spacing.
+
+For Poisson, choose an octree depth that yields voxel sizes smaller than your layer spacing.
+
+Noise Characteristics
+
+IR readings tend to be noisier at the sensor’s range limits; remove those outliers first.
+
+Ultrasonic readings may have specular errors—clean those with outlier-removal filters.
+
+Normals Direction
+Since your scanner always faces outward, normals will naturally point toward the object. Ensure they’re all consistently oriented outward before reconstruction.
+
+By following these steps in MeshLab—cleaning → normal estimation → Poisson or BPA → cleanup & smoothing—you’ll convert your IR + ultrasonic point clouds into high-quality meshes ready for visualization, analysis, or 3D printing.
+
+
+
+
+
+
+
+
+
+
+
+Search
+
+Reason
+
+Deep research
+

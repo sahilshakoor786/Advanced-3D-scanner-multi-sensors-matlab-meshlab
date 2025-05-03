@@ -1,0 +1,55 @@
+// Define pin numbers for each motor
+const int motor1Step = 9;
+const int motor1Dir  = 8;
+
+const int motor2Step = 7;
+const int motor2Dir  = 6;
+
+void setup() {
+  // Initialize serial communication for debugging
+  Serial.begin(9600);
+  
+  // Set all step and direction pins as outputs
+  pinMode(motor1Step, OUTPUT);
+  pinMode(motor1Dir, OUTPUT);
+  pinMode(motor2Step, OUTPUT);
+  pinMode(motor2Dir, OUTPUT);
+  
+  // Set initial direction for both motors (adjust as needed)
+  digitalWrite(motor1Dir, LOW);
+  digitalWrite(motor2Dir, LOW);
+}
+
+void loop() {
+  // --------- Test Motor 1 Only ---------
+  Serial.println("Testing Motor 1");
+  for (int i = 0; i < 200; i++) {
+    digitalWrite(motor1Step, HIGH);
+    delayMicroseconds(1000);
+    digitalWrite(motor1Step, LOW);
+    delayMicroseconds(1000);
+  }
+  delay(1000);  // 1 second pause
+
+  // --------- Test Motor 2 Only ---------
+  Serial.println("Testing Motor 2");
+  for (int i = 0; i < 200; i++) {
+    digitalWrite(motor2Step, HIGH);
+    delayMicroseconds(1000);
+    digitalWrite(motor2Step, LOW);
+    delayMicroseconds(1000);
+  }
+  delay(1000);  // 1 second pause
+  
+  // --------- Test Both Motors Simultaneously ---------
+  Serial.println("Testing Both Motors Simultaneously");
+  for (int i = 0; i < 200; i++) {
+    digitalWrite(motor1Step, HIGH);
+    digitalWrite(motor2Step, HIGH);
+    delayMicroseconds(1000);
+    digitalWrite(motor1Step, LOW);
+    digitalWrite(motor2Step, LOW);
+    delayMicroseconds(1000);
+  }
+  delay(1000);  // Pause before restarting the cycle
+}

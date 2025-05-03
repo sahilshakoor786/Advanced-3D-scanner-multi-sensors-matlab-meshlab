@@ -1,0 +1,32 @@
+// Define pin numbers for each motor
+const int motor1Step = 9;
+const int motor1Dir  = 8;
+
+const int motor2Step = 7;
+const int motor2Dir  = 6;
+
+void setup() {
+  // Set all step and direction pins as outputs
+  pinMode(motor1Step, OUTPUT);
+  pinMode(motor1Dir,  OUTPUT);
+  pinMode(motor2Step, OUTPUT);
+  pinMode(motor2Dir,  OUTPUT);
+  
+  // Set initial direction for both motors (adjust as needed)
+  digitalWrite(motor1Dir, LOW);
+  digitalWrite(motor2Dir, LOW);
+}
+
+void loop() {
+  // Step both motors simultaneously:
+  
+  // Start the pulse by setting STEP pins HIGH
+  digitalWrite(motor1Step, HIGH);
+  digitalWrite(motor2Step, HIGH);
+  delayMicroseconds(1000);  // Pulse duration (adjust for your motor speed)
+  
+  // End the pulse by setting STEP pins LOW
+  digitalWrite(motor1Step, LOW);
+  digitalWrite(motor2Step, LOW);
+  delayMicroseconds(1000);  // Delay between pulses
+}

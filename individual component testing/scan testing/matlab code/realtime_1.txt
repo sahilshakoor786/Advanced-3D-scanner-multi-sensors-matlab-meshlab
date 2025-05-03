@@ -1,0 +1,93 @@
+%% Real-Time 3D Scan Plot from Arduino Data
+
+% --- Configuration ---
+comPort = "COM11";   % Change to your Arduino's COM port
+baudRate = 9600;    % Must match the Arduino Serial.begin() rate
+
+% Define conversion constants:
+thetaCounts = 200;                % Number of steps per full rotation
+thetaIncrement = 2*pi/thetaCounts;  % Angle increment per reading (in radians)
+vertDistance = 10;                % Total Z travel in cm (as in Arduino code)
+zCounts = 100;                    % Total vertical levels (derived from your Arduino configuration)
+zStepSize = vertDistance / zCounts;  % Vertical distance per level (cm)
+
+% --- Open Serial Connection ---
+s = serialport(comPort, baudRate);
+configureTerminator(s, "LF");  % Arduino uses line feed as the terminator
+
+% --- Initialize Variables ---
+currentZ = 0;     % Current Z-level index (updated when a "Z-Level" line is read)
+angleCount = 0;   % Angle counter (reset for each Z-level)
+
+% Arrays to hold 3D point data
+X = [];
+Y = [];
+Z = [];
+
+% --- Set Up Real-Time 3D Plot ---
+figure;
+hScatter = scatter3([], [], [], 'filled');
+xlabel('X (cm)');
+ylabel('Y (cm)');
+zlabel('Z (cm)');
+title('Real-Time 3D Scan');
+grid on;
+% Adjust axis limits as necessary based on your scanner's range
+axis([-20 20 -20 20 0 vertDistance]);
+view(3);
+drawnow;
+
+% --- Main Loop: Read and Plot Data ---
+disp('Start reading data from Arduino...');
+while isvalid(s)
+    % Read a line from the serial port
+    line = readline(s);
+    line = strtrim(line);  % Remove any whitespace
+    
+    % Check if the line indicates a new Z-level (e.g., "Z-Level 0:")
+    if startsWith(line, 'Z-Level')
+        % Parse the Z-level index from the line
+        tokens = regexp(line, 'Z-Level\s*(\d+)', 'tokens');
+        if ~isempty(tokens)
+            currentZ = str2double(tokens{1}{1});
+            angleCount = 0; % Reset angle counter for the new level
+            fprintf('New Z-Level: %d\n', currentZ);
+        end
+        
+    % Check if the line contains a sensor reading (contains "cm")
+    elseif contains(line, 'cm')
+        % Parse the sensor distance value (assuming format like "9.20 cm")
+        tokens = regexp(line, '([\d\.]+)\s*cm', 'tokens');
+        if ~isempty(tokens)
+            sensorDistance = str2double(tokens{1}{1});
+            
+            % Calculate the angle for this reading
+            theta = angleCount * thetaIncrement;
+            angleCount = angleCount + 1;
+            
+            % Convert from polar to Cartesian coordinates:
+            % Assume sensor distance directly gives the radial coordinate.
+            x = sensorDistance * cos(theta);
+            y = sensorDistance * sin(theta);
+            zVal = currentZ * zStepSize;  % Vertical coordinate (cm)
+            
+            % Append the new point to our arrays
+            X(end+1) = x;
+            Y(end+1) = y;
+            Z(end+1) = zVal;
+            
+            % Update the scatter plot with the new point cloud data
+            set(hScatter, 'XData', X, 'YData', Y, 'ZData', Z);
+            drawnow;
+        end
+        
+    else
+        % For other lines (such as "----- New Z Level -----" or end messages), 
+        % you can choose to ignore or print them:
+        fprintf('%s\n', line);
+    end
+end
+
+% --- Cleanup ---
+clear s;  % Close the serial port when done
+availablePorts = serialportlist("available")

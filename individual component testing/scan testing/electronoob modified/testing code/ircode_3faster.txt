@@ -1,0 +1,226 @@
+#include <SPI.h>
+#include <SD.h>
+
+// SD card connection pins
+const int csPin = 10;
+String filename = "scn000.txt";  // File to store point cloud data
+
+// IR sensor pin (Sharp GP2Y0A51SK0F: 2–15 cm)
+const int sensePin = A3;
+
+// Turntable (theta) motor pins
+const int tStep   = 2;
+const int tDir    = 3;
+const int tMS1    = 4;
+const int tMS2    = 5;
+const int tEnable = 6;
+
+// Z‑axis motor pins
+const int zStep   = 7;
+const int zDir    = 8;
+const int zMS1    = 9;
+const int zMS2    = A2;  // Use A2 as digital output
+const int zEnable = A1;  // Use A1 as digital output
+
+// Scanning parameters
+const int thetaCounts = 200;     // Steps per full rotation for the turntable
+const int noZSteps = 20;         // Steps to move between layers
+const float maxDistance = 20.0;  // Maximum sensor distance (cm)
+const float tolerance = 0.1;     // Tolerance for max distance
+const float zLayerSpacing = 0.2; // Vertical spacing between layers (cm)
+
+// Compute angle increment (in radians) for each step on the turntable
+const float stepAngle = (2 * PI) / thetaCounts;
+
+// Global variable to track the current layer (starting at 0)
+int layer = 0;
+
+// SD file handle
+File scannerValues;
+
+void setup() {
+  // Set up motor pins for the turntable
+  pinMode(tStep, OUTPUT);
+  pinMode(tDir, OUTPUT);
+  pinMode(tMS1, OUTPUT);
+  pinMode(tMS2, OUTPUT);
+  pinMode(tEnable, OUTPUT);
+
+  // Set up motor pins for the Z-axis
+  pinMode(zStep, OUTPUT);
+  pinMode(zDir, OUTPUT);
+  pinMode(zMS1, OUTPUT);
+  pinMode(zMS2, OUTPUT);
+  pinMode(zEnable, OUTPUT);
+
+  // Set microstepping to full step (both MS pins LOW)
+  digitalWrite(tMS1, LOW);
+  digitalWrite(tMS2, LOW);
+  digitalWrite(zMS1, LOW);
+  digitalWrite(zMS2, LOW);
+
+  // Enable motor drivers
+  digitalWrite(tEnable, LOW);
+  digitalWrite(zEnable, LOW);
+
+  // Initialize serial communication
+  Serial.begin(9600);
+
+  // Initialize SD card
+  Serial.print("Initializing SD card... ");
+  if (!SD.begin(csPin)) {
+    Serial.println("initialization failed!");
+    while (1);  // Halt execution if SD card init fails
+  }
+  Serial.println("initialization success!");
+
+  // Write a header (optional) to the file
+  scannerValues = SD.open(filename, FILE_WRITE);
+  if (scannerValues) {
+    scannerValues.println("# x y z");
+    scannerValues.close();
+  }
+}
+
+void loop() {
+  bool stopScanning = false;
+  Serial.println("Starting scan...");
+
+  // Set the Z-axis to move upward (assumed: LOW = upward)
+  digitalWrite(zDir, LOW);
+
+  // Scan continuously layer by layer
+  while (!stopScanning) {
+    Serial.print("Scanning layer: ");
+    Serial.println(layer);
+
+    // Assume this layer is entirely "air" until proven otherwise.
+    bool allAtMax = true;
+
+    // Perform a full rotation scan for this layer
+    for (int i = 0; i < thetaCounts; i++) {
+      // Rotate the turntable one step
+      rotateMotor(tStep, 1);
+      delay(50);  // Reduced delay for faster settling
+
+      // Read sensor distance (in cm) using a median filter method
+      double senseDistance = readIRSensorMedian();
+
+      // Calculate the current angle in radians
+      float angle = i * stepAngle;
+
+      // Compute x and y coordinates using polar coordinates
+      double x = senseDistance * sin(angle);
+      double y = senseDistance * cos(angle);
+      // z coordinate is based on the current layer
+      double zCoord = layer * zLayerSpacing;
+
+      // Write the computed point to the SD card file
+      writeToSD(x, y, zCoord);
+
+      // Check if any reading is less than (maxDistance - tolerance)
+      if (senseDistance < (maxDistance - tolerance)) {
+        allAtMax = false;
+      }
+    }
+
+    // If every measurement in this layer is near max distance, stop scanning.
+    if (allAtMax) {
+      stopScanning = true;
+      Serial.println("Layer is entirely at max distance. Stopping scan.");
+    } else {
+      // Move the Z-axis upward for the next layer
+      rotateMotor(zStep, noZSteps);
+      delay(500);  // Slightly reduced delay between layers
+      layer++;  // Increment layer count
+    }
+  }
+
+  // After scanning, return the Z-axis to the home position.
+  Serial.println("Scan complete. Returning z-axis to home...");
+  digitalWrite(zDir, HIGH);  // Reverse Z-axis direction (assumed: HIGH = downward)
+  delay(10);
+  for (int j = 0; j < layer; j++) {
+    rotateMotor(zStep, noZSteps);
+    delay(10);
+  }
+
+  Serial.println("Scan finished. Halting further scanning.");
+  while (true) {
+    delay(1000);  // Stop further processing
+  }
+}
+
+// Function to rotate a motor by pulsing its step pin a given number of times
+void rotateMotor(int stepPin, int steps) {
+  for (int i = 0; i < steps; i++) {
+    digitalWrite(stepPin, LOW);
+    delay(1);
+    digitalWrite(stepPin, HIGH);
+    delay(1);
+  }
+}
+
+// Function to read the analog sensor using a median filter approach for better noise rejection.
+// This version takes 5 samples quickly, sorts them, and returns the median value after calibration.
+double readIRSensorMedian() {
+  const int noSamples = 5;
+  int samples[noSamples];
+
+  // Take a few quick samples
+  for (int i = 0; i < noSamples; i++) {
+    samples[i] = analogRead(sensePin);
+    delayMicroseconds(500);  // minimal delay between samples
+  }
+
+  // Sort the samples (simple bubble sort for 5 values)
+  for (int i = 0; i < noSamples - 1; i++) {
+    for (int j = i + 1; j < noSamples; j++) {
+      if (samples[j] < samples[i]) {
+        int temp = samples[i];
+        samples[i] = samples[j];
+        samples[j] = temp;
+      }
+    }
+  }
+  
+  // Take the median value
+  int medianValue = samples[noSamples / 2];
+  
+  // Convert analog reading (0-1023) to voltage (0-5V)
+  double voltage = mapDouble(medianValue, 0.0, 1023.0, 0.0, 5.0);
+
+  // Cubic calibration (from datasheet)
+  double distance = -5.40274 * pow(voltage, 3) 
+                    + 28.4823 * pow(voltage, 2) 
+                    - 49.7115 * voltage 
+                    + 31.3444;
+
+  // Cap the distance at maxDistance if necessary
+  if (distance > maxDistance) {
+    distance = maxDistance;
+  }
+  
+  return distance;
+}
+
+// Write the (x, y, z) coordinates to the SD card (space-separated)
+void writeToSD(double x, double y, double z) {
+  scannerValues = SD.open(filename, FILE_WRITE);
+  if (scannerValues) {
+    scannerValues.print(x, 3);
+    scannerValues.print(" ");
+    scannerValues.print(y, 3);
+    scannerValues.print(" ");
+    scannerValues.println(z, 3);
+    scannerValues.close();
+  } else {
+    Serial.print("Error opening ");
+    Serial.println(filename);
+  }
+}
+
+// Utility function to map a double from one range to another
+double mapDouble(double x, double in_min, double in_max, double out_min, double out_max) {
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}

@@ -1,0 +1,250 @@
+/* Arduino Uno R3 Scanner Code (modified from DIY 3D Scanner - Super Make Something Episode 8)
+ * by: Alex - Super Make Something (modified for Uno R3)
+ * license: Creative Commons - Attribution - Non-Commercial.
+ *
+ * Pinout:
+ *
+ * SD card attached to SPI bus as follows:
+ *   - CS   : D10
+ *   - SCK  : D13
+ *   - MOSI : D11
+ *   - MISO : D12
+ *
+ * IR Sensor (10–80 cm range) attached to:
+ *   - Sense: A3
+ *
+ * Turntable stepper motor driver board:
+ *   - STEP   : D2
+ *   - DIR    : D3 
+ *   - MS1    : D4
+ *   - MS2    : D5
+ *   - Enable : D6
+ *
+ * Z‑Axis stepper motor driver board:
+ *   - STEP   : D7
+ *   - DIR    : D8
+ *   - MS1    : D9
+ *   - MS2    : A2   (use analog pin A2 as digital output)
+ *   - ENABLE : A1   (use analog pin A1 as digital output)
+ */
+
+#include <SPI.h>
+#include <SD.h>
+
+File scannerValues;
+String filename = "scn000.txt";
+
+// SD card chip select
+int csPin = 10;  // CS on D10
+
+// IR sensor pin (range 10–80 cm)
+int sensePin = A3;
+
+// Turntable (theta) motor pins
+int tStep   = 2;
+int tDir    = 3;
+int tMS1    = 4;
+int tMS2    = 5;
+int tEnable = 6;
+
+// Z‑axis motor pins (for Uno, using A1 and A2 for the updated connections)
+int zStep   = 7;
+int zDir    = 8;
+int zMS1    = 9;
+int zMS2    = A2;  // Use analog pin A2 as digital output
+int zEnable = A1;  // Use analog pin A1 as digital output
+
+void setup() 
+{ 
+  // Define stepper pins as digital outputs
+  pinMode(tStep, OUTPUT);
+  pinMode(tDir, OUTPUT);
+  pinMode(tMS1, OUTPUT);
+  pinMode(tMS2, OUTPUT);
+  pinMode(tEnable, OUTPUT);
+  pinMode(zStep, OUTPUT);
+  pinMode(zDir, OUTPUT);
+  pinMode(zMS1, OUTPUT);
+  pinMode(zMS2, OUTPUT);
+  pinMode(zEnable, OUTPUT);
+
+  // Set microstepping mode for stepper driver boards
+  // Theta motor: no microstepping (MS1 Low, MS2 Low) = 1.8°/step (200 steps/rev)
+  digitalWrite(tMS1, LOW);
+  digitalWrite(tMS2, LOW);
+  
+  // Z motor: no microstepping (MS1 Low, MS2 Low) = 1.8°/step (200 steps/rev)
+  digitalWrite(zMS1, LOW);
+  digitalWrite(zMS2, LOW);
+
+  // Optional: set rotation directions if needed (uncomment and adjust)
+  // digitalWrite(tDir, HIGH);
+  // digitalWrite(zDir, LOW);
+  // delay(100);
+
+  // Enable motor controllers
+  digitalWrite(tEnable, LOW);
+  digitalWrite(zEnable, LOW);
+    
+  // Open serial communications
+  Serial.begin(9600);
+
+  // Initialize SD card
+  Serial.print("Initializing SD card... ");
+  if (!SD.begin(csPin))
+  {
+    Serial.println("initialization failed!");
+    return;
+  }
+  Serial.println("initialization success!");
+}
+
+void loop() 
+{
+  int vertDistance = 10; // Total desired z-axis travel (arbitrary units)
+  int noZSteps = 20;     // Number of z-steps per rotation. (Distance = noSteps * 0.05mm/step)
+  int zCounts = (200 * vertDistance) / noZSteps; // Total zCounts until z-axis returns home
+  int thetaCounts = 200;  // Theta motor steps per revolution
+
+  Serial.println("Starting scan...");
+  
+  // Scan object
+  digitalWrite(zDir, LOW); 
+  for (int j = 0; j < zCounts; j++) // Rotate z-axis loop
+  {
+    Serial.print("Z-layer: ");
+    Serial.println(j);
+    
+    for (int i = 0; i < thetaCounts; i++)   // One revolution for theta motor
+    {
+      rotateMotor(tStep, 1); // Rotate theta motor one step
+      delay(200);
+      
+      double senseDistance = readAnalogSensor(); // Read IR sensor and calculate distance in cm
+      
+      // Print sensor reading to Serial Monitor
+      Serial.print("Step ");
+      Serial.print(i);
+      Serial.print(" - Distance: ");
+      Serial.print(senseDistance, 2);
+      Serial.println(" cm");
+      
+      writeToSD(senseDistance); // Write sensed distance to SD card
+    }
+  
+    rotateMotor(zStep, noZSteps); // Move z carriage up one step
+    delay(1000);
+    
+    // Write a dummy value to SD to mark layer changes
+    writeToSD(9999);
+    Serial.println("----- End of layer -----");
+  }
+
+  // Scan complete. Rotate z-axis back to home and pause.
+  Serial.println("Scan complete. Returning z-axis to home...");
+  digitalWrite(zDir, HIGH);
+  delay(10);  
+  for (int j = 0; j < zCounts; j++)
+  {
+    rotateMotor(zStep, noZSteps);
+    delay(10);
+  }
+
+  Serial.println("Scan finished. Pausing for one hour.");
+  // Pause for one hour after scan completion
+  for (int k = 0; k < 3600; k++)
+  {
+    delay(1000); 
+  }
+
+  // Uncomment to debug SD readout:
+  // readFromSD();
+}
+
+void rotateMotor(int pinNo, int steps)
+{
+  for (int i = 0; i < steps; i++)
+  {
+    digitalWrite(pinNo, LOW);
+    delay(1);
+    digitalWrite(pinNo, HIGH);
+    delay(1);
+  }
+}
+
+double readAnalogSensor()
+{
+  int noSamples = 100;
+  long sumOfSamples = 0;
+  
+  for (int i = 0; i < noSamples; i++)
+  {
+    sumOfSamples += analogRead(sensePin);
+    delay(2); // Allow analog pin to settle
+  }
+  
+  double senseValue = (double)sumOfSamples / noSamples;
+  // Convert analog reading to voltage (assuming 5V reference)
+  double voltage = mapDouble(senseValue, 0.0, 1023.0, 0.0, 5.0);
+  
+  // For a sensor with a 10–80 cm range (e.g. Sharp GP2Y0A21YK0F),
+  // an approximate calibration is:
+  //   distance (cm) = 27.86 * (voltage^-1.15)
+  double distance;
+  if (voltage <= 0)
+  {
+    distance = 80;  // Default to maximum distance if error
+  }
+  else
+  {
+    distance = 27.86 * pow(voltage, -1.15);
+  }
+  
+  return distance;
+}
+
+void writeToSD(double senseDistance)
+{
+  // Open file for writing
+  scannerValues = SD.open(filename, FILE_WRITE);
+  
+  if (scannerValues)
+  {
+    scannerValues.print(senseDistance);
+    scannerValues.println();
+    scannerValues.close();
+  } 
+  else 
+  {
+    Serial.print("Error opening ");
+    Serial.println(filename);
+  }
+}
+
+void readFromSD()
+{  
+  // Open file for reading:
+  scannerValues = SD.open(filename);
+  if (scannerValues)
+  {
+    Serial.print("Contents of ");
+    Serial.print(filename);
+    Serial.println(":");
+
+    while (scannerValues.available()) 
+    {
+      Serial.write(scannerValues.read());
+    }
+    scannerValues.close();
+  } 
+  else
+  {
+    Serial.print("Error opening ");
+    Serial.println(filename);
+  }
+}
+
+double mapDouble(double x, double in_min, double in_max, double out_min, double out_max)
+{
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}

@@ -1,0 +1,167 @@
+Your scanner integrates five core mathematical components:
+
+Triangulation-based IR ranging, where the Sharp GP2Y0A51SK0F outputs a voltage proportional to object distance via an internal triangulation method 
+Sharp Global
+.
+
+Sonar-based ultrasonic ranging, using the standard distance = (speed of sound × time)/2 formula 
+Instructables
+.
+
+Polar-to-Cartesian conversion to turn angle + distance into (x,y,z) coordinates 
+Stack Overflow
+The blog at the bottom of the sea
+.
+
+Stepper motor angular resolution, achieved through full steps and optional microstepping for finer angular increments 
+linearmotiontips.com
+Anaheim Automation
+.
+
+Layer-by-layer slicing, lifting the sensor assembly by fixed increments and repeating sweeps to build a 3D point cloud 
+ResearchGate
+Creaform
+.
+
+Sensor Measurement Models
+IR Sensor Triangulation
+The Sharp GP2Y0A51SK0F employs an IR-LED, a position-sensitive detector (PSD), and onboard signal processing to perform triangulation: as the reflected spot moves on the PSD, the output voltage varies nonlinearly with distance 
+Sharp Global
+.
+A cubic calibration curve (as in your code) maps output voltage to distance, capping at the sensor’s maximum (~15 cm) for stability 
+Pololu Robotics and Electronics
+.
+
+Ultrasonic Sonar Ranging
+Each ultrasonic sensor emits a 40 kHz pulse and measures the round-trip time T of echoes; distance D is then
+
+𝐷
+=
+1
+2
+ 
+𝑇
+×
+𝑐
+,
+D= 
+2
+1
+​
+ T×c,
+where c ≈ 343 m/s is the speed of sound 
+Instructables
+.
+Your implementation uses a 10 µs trigger and pulseIn() with a timeout, converting microseconds to centimeters via
+
+𝐷
+(
+cm
+)
+=
+𝑇
+(
+𝜇
+𝑠
+)
+×
+0.0343
+2
+D(cm)= 
+2
+T(μs)×0.0343
+​
+ 
+and capping at your chosen maxDistance 
+Medium
+.
+
+Coordinate Conversion
+To reconstruct 3D geometry, each distance reading d at rotation angle θ is converted from polar to Cartesian coordinates:
+
+𝑥
+=
+𝑑
+ 
+sin
+⁡
+𝜃
+,
+𝑦
+=
+𝑑
+ 
+cos
+⁡
+𝜃
+,
+𝑧
+=
+layer
+×
+Δ
+𝑧
+.
+x=dsinθ,y=dcosθ,z=layer×Δz.
+More generally, for full 3D spherical coordinates:
+
+𝑥
+=
+𝑟
+sin
+⁡
+𝜑
+ 
+cos
+⁡
+𝛼
+,
+𝑦
+=
+𝑟
+sin
+⁡
+𝜑
+ 
+sin
+⁡
+𝛼
+,
+𝑧
+=
+𝑟
+cos
+⁡
+𝜑
+,
+x=rsinφcosα,y=rsinφsinα,z=rcosφ,
+where r is radius, α the horizontal angle, and φ the vertical angle 
+Stack Overflow
+The blog at the bottom of the sea
+.
+
+Stepper Motor Motion Control
+Angular Resolution
+Standard steppers have a full-step angle (commonly 1.8° per step for 200 steps/rev). Microstepping divides this further—for example, 1/256 microsteps yields ≈ 0.007° per microstep (i.e., 51,200 microsteps/rev) 
+linearmotiontips.com
+.
+
+Speed vs. Precision
+Your code uses two pulse routines:
+
+rotateMotor() with 1 ms pulses (~500 Hz) for scanning, balancing speed and stability.
+
+rotateMotorFast() with 0.2 ms pulses (~2,500 Hz) for initialization moves.
+Angular displacement per pulse remains the same; only the stepping frequency changes 
+Anaheim Automation
+.
+
+Layer-by-Layer Scanning Rationale
+Slicing an object into horizontal layers is akin to rapid prototyping and tomography: each 2D contour (point cloud slice) captures object cross-sections at known z heights 
+ResearchGate
+.
+By projecting sensor readings onto successive planes—lifting Δz per pass—you build up a full 3D model without complex surface fitting, directly stitching together contours from each layer 
+ResearchGate
+.
+
+Through these mathematical and rational foundations—sensor calibration, geometric conversion, precise motor control, and systematic layering—your scanner reliably acquires a 3D point cloud of the scanned object.
